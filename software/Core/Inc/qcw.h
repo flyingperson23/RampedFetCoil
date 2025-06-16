@@ -27,5 +27,10 @@ void QCW_Loop();
 #define FAN_END 45.0
 #define CHARGE_THRESHOLD 1.0
 #define RAMP_STEPS 200
+#define FB_DR_TH 0.1
+#define FB_AV_TH 0.4
+
+void StartPulse(float length, float end_v1, float OCD);
+
 
 #endif /* INC_QCW_H_ */

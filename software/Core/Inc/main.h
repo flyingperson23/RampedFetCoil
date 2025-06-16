@@ -63,8 +63,6 @@ void Error_Handler(void);
 #define THERM_GPIO_Port GPIOA
 #define VBUS_SENSE_Pin GPIO_PIN_4
 #define VBUS_SENSE_GPIO_Port GPIOA
-#define SPI1_CS_Pin GPIO_PIN_0
-#define SPI1_CS_GPIO_Port GPIOB
 #define GD_2_Pin GPIO_PIN_8
 #define GD_2_GPIO_Port GPIOA
 #define GD_DIS_Pin GPIO_PIN_9
@@ -106,6 +104,7 @@ extern TIM_HandleTypeDef htim4;
 extern TIM_HandleTypeDef htim6;
 extern TIM_HandleTypeDef htim7;
 extern TIM_HandleTypeDef htim8;
+extern TIM_HandleTypeDef htim15;
 
 extern UART_HandleTypeDef huart1;
 /* USER CODE END Private defines */

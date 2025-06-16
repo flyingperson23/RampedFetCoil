@@ -23,10 +23,15 @@ float vbus = 0;
 
 float transfer_function[RAMP_STEPS];
 
-void QCW_Init() {
-	HAL_Delay(2500); // TODO: fix? it needs a delay to fill the 16v cap
+uint32_t fb_dr_upper;
+uint32_t fb_av_upper;
+uint32_t fb_dr_lower;
+uint32_t fb_av_lower;
 
+void QCW_Init() {
 	GD_DIS_GPIO_Port->BRR = GD_DIS_Pin; // disable GD
+
+	HAL_Delay(1000);
 
 	TS_CAL1 = *((uint16_t *) 0x1FFF75A8); // get calibration data from memory
 	TS_CAL2 = *((uint16_t *) 0x1FFF75CA);
@@ -38,7 +43,7 @@ void QCW_Init() {
 	HAL_ADCEx_Calibration_Start(&hadc2, ADC_SINGLE_ENDED);
 	HAL_ADC_Start_DMA(&hadc2, (uint32_t *) vbus_buf, 1);
 
-	HAL_TIM_Base_Start(&htim8);
+	HAL_TIM_Base_Start(&htim15); // ADC trigger comparator
 
     HAL_DAC_Start(&hdac1, DAC_CHANNEL_1); // OCD dac - Configured to be the - input of OCD comparator
 
@@ -82,8 +87,12 @@ void QCW_Loop() { // 10Hz
 	vbus_last = vbus; // precharge
 
 	float fan = (temp_ext - (float) FAN_START) / ((float) FAN_END - (float) FAN_START);
+
 	if (fan < 0) fan = 0;
 	if (fan > 1) fan = 1;
+
+	//fan = 1.0f;
+
 	TIM4->CCR3 = (int) (fan * (float) TIM4->ARR); // fan
 }
 
@@ -106,6 +115,10 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
 		} else {
 			TIM4->CCR1 = TIM4->ARR;
 		}
+
+		//TODO: REMOVE
+		//vbus = 200;
+		//rdy = 1;
 	}
 
 }
@@ -118,8 +131,8 @@ int ccr3 = 0;
 
 // length in ms
 void StartPulse(float length, float end_v1, float OCD) {
-	if (vbus > 0) {
-		uint32_t counts = (uint32_t) (OCD / 200.0f * 2.0f); // 200:1 CT, 2R burden
+	if (vbus > 0 && rdy) {
+		uint32_t counts = (uint32_t) (4095.0 / VREF * OCD / 200.0f * 2.0f); // 200:1 CT, 2R burden
 	    HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, counts);
 
 		TIM3->CCR1 = TIM3->ARR; // Start pulse led
@@ -138,27 +151,77 @@ void StartPulse(float length, float end_v1, float OCD) {
 		TIM1->CCR3 = MIN_PHASE;
 		TIM1->CCR4 = TIM1->ARR - MIN_PHASE;
 
-		TIM6->ARR = (170000.0 * length / (float) RAMP_STEPS) - 1; // ramp adjust timer
+		TIM6->ARR = (uint32_t) (170000.0 * length / (float) RAMP_STEPS) - 1; // ramp adjust timer
 		TIM6->CNT = 0;
+
+		TIM8->ARR = TIM1->ARR;
+		TIM8->CNT = 0;
+		TIM8->CCR1 = TIM8->ARR - PHASE_LEAD;
+
 		HAL_TIM_Base_Start_IT(&htim6);
 
-
-		HAL_TIM_PWM_Start_IT(&htim1, TIM_CHANNEL_1);
+		HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+		HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
 		HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
+		HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
+
+		HAL_TIM_PWM_Start_IT(&htim8, TIM_CHANNEL_1);
 
 		GD_DIS_GPIO_Port->BSRR = GD_DIS_Pin; // enable
 
 	}
 }
 
+void EndPulse() {
+    GD_DIS_GPIO_Port->BRR = GD_DIS_Pin; // disable
+
+	HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+	HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_2);
+	HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_3);
+	HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_4);
+	HAL_TIM_PWM_Stop(&htim8, TIM_CHANNEL_1);
+	HAL_TIM_Base_Stop(&htim6);
+
+    TIM3->CCR1 = 0; // Clear pulse led
+}
+
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
 	if (htim == &htim2) {
 		if (start_counter >= START_CYCLES) {
-		    TIM1->ARR = TIM2->CCR1 >> 1; // asymmetric has up/down counting
+
+		    //TIM1->ARR = TIM2->CCR1 >> 1; // asymmetric has up/down counting
+		    //TIM8->ARR = TIM1->ARR;
+
+
+			/*
+		    uint32_t new_arr = TIM2->CCR1 >> 1;
+
+		    if (new_arr > TIM1->ARR) {
+		    	if (new_arr < fb_dr_upper) {
+		    		TIM1->ARR = new_arr;
+		    	} else if (new_arr < fb_av_upper) {
+		    		TIM1->ARR = (TIM1->ARR + new_arr) >> 1;
+		    	}
+		    } else {
+		    	if (new_arr > fb_dr_lower) {
+		    		TIM1->ARR = new_arr;
+		    	} else if (new_arr > fb_av_lower) {
+		    		TIM1->ARR = (TIM1->ARR + new_arr) >> 1;
+		    	}
+		    }
+		    TIM8->ARR = TIM1->ARR;
+
+
+		    fb_dr_upper = (uint32_t) ((float) TIM1->ARR * (1.0f + FB_DR_TH));
+		    fb_dr_lower = (uint32_t) ((float) TIM1->ARR * (1.0f - FB_DR_TH));
+		    fb_av_upper = (uint32_t) ((float) TIM1->ARR * (1.0f + FB_AV_TH));
+		    fb_av_lower = (uint32_t) ((float) TIM1->ARR * (1.0f - FB_AV_TH));
+*/
+
+
 		    // this uses tim2 to capture the period of the zcd signal that comes from the zcd comparator
 		    // unless doing phase shift modulation this is the only code you *need*, to sync the output timer's period
 		    // w/ the incoming period
-		    // probably good to do some sort of filtering on this but ill get to that later
 		}
 	    TIM2->CNT = 0;
 	}
@@ -172,18 +235,11 @@ void HAL_COMP_TriggerCallback(COMP_HandleTypeDef *hcomp) {
 
 uint8_t hardsw_side = 0;
 
-// Asymmetric pwm: up down counting; for output channel 1 ccr1 controls compare value for up counting,
-// ccr2 for down counting. for output channel 3, ccr3 for up and ccr4 for down. ccr2-ccr1 = ccr4-ccr3 = arr for 50% dtc
-// but shift ccr1 relative to ccr3 for phase shift modulation, 100% power when ccr1=ccr3
-// if the channel not being shifted is offset a little from the end i.e. ccr1 = arr - pl, ccr2 = pl this gives pl as phase lead
-// bc the comparator is configured to reset the counter of the main timer
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
-	if (htim == &htim1) {
+void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim) {
+	if (htim == &htim8) {
+
 		if (ocd) { // if ocd, turn off on timer reset
-		    __HAL_TIM_DISABLE(&htim1);
-		    __HAL_TIM_DISABLE(&htim6);
-		    GD_DIS_GPIO_Port->BRR = GD_DIS_Pin; // disable
-		    TIM3->CCR1 = 0; // Clear pulse led
+			EndPulse();
 		    TIM3->CCR2 = TIM3->ARR; // Set OCD Led
 		}
 
@@ -191,7 +247,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 			start_counter++;
 		} // TODO: make a wick ??
 
-		hardsw_side = !hardsw_side; // alternate hardswitch side
+		//hardsw_side = !hardsw_side; // alternate hardswitch side
 
 		if (hardsw_side) {
 			TIM1->CCR1 = TIM1->ARR - PHASE_LEAD;
@@ -199,21 +255,30 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 
 			TIM1->CCR3 = ccr3;
 			TIM1->CCR4 = TIM1->ARR - ccr3;
+
 		} else {
 			TIM1->CCR1 = ccr3;
 			TIM1->CCR2 = TIM1->ARR - ccr3;
 
 			TIM1->CCR3 = TIM1->ARR - PHASE_LEAD;
 			TIM1->CCR4 = PHASE_LEAD;
-		}
 
+		}
+		TIM8->CCR1 = TIM8->ARR - PHASE_LEAD;
 	}
+}
+
+// Asymmetric pwm: up down counting; for output channel 1 ccr1 controls compare value for up counting,
+// ccr2 for down counting. for output channel 3, ccr3 for up and ccr4 for down. ccr2-ccr1 = ccr4-ccr3 = arr for 50% dtc
+// but shift ccr1 relative to ccr3 for phase shift modulation, 100% power when ccr1=ccr3
+// if the channel not being shifted is offset a little from the end i.e. ccr1 = arr - pl, ccr2 = pl this gives pl as phase lead
+// bc the comparator is configured to reset the counter of the main timer
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 	if (htim == &htim6) { // increment ramp
+		ramp_cnt++;
+
 		if (ramp_cnt >= RAMP_STEPS) {
-		    __HAL_TIM_DISABLE(&htim1);
-		    __HAL_TIM_DISABLE(&htim6);
-		    GD_DIS_GPIO_Port->BRR = GD_DIS_Pin; // disable
-		    TIM3->CCR1 = 0; // Clear pulse led
+			EndPulse();
 		} else if (vbus > 0) {
 			uint16_t tf_index = (uint16_t) ((float) ramp_cnt * end_v / vbus);
 			if (tf_index >= RAMP_STEPS) tf_index = RAMP_STEPS - 1;
@@ -222,7 +287,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 			if (ccr3 < MIN_PHASE) ccr3 = MIN_PHASE;
 			if (ccr3 > TIM1->ARR) ccr3 = TIM1->ARR;
 		}
-		ramp_cnt++;
 
 	}
 	if (htim == &htim7) {
