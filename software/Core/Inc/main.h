@@ -63,6 +63,8 @@ void Error_Handler(void);
 #define THERM_GPIO_Port GPIOA
 #define VBUS_SENSE_Pin GPIO_PIN_4
 #define VBUS_SENSE_GPIO_Port GPIOA
+#define VDRIVE_SENSE_Pin GPIO_PIN_5
+#define VDRIVE_SENSE_GPIO_Port GPIOA
 #define GD_2_Pin GPIO_PIN_8
 #define GD_2_GPIO_Port GPIOA
 #define GD_DIS_Pin GPIO_PIN_9
@@ -94,8 +96,6 @@ extern COMP_HandleTypeDef hcomp1;
 extern COMP_HandleTypeDef hcomp2;
 
 extern DAC_HandleTypeDef hdac1;
-
-extern SPI_HandleTypeDef hspi1;
 
 extern TIM_HandleTypeDef htim1;
 extern TIM_HandleTypeDef htim2;

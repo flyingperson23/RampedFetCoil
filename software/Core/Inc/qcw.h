@@ -29,6 +29,7 @@ void QCW_Loop();
 #define RAMP_STEPS 200
 #define FB_DR_TH 0.1
 #define FB_AV_TH 0.4
+#define VDRIVE_TH 9.0
 
 void StartPulse(float length, float end_v1, float OCD);
 

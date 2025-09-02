@@ -7,7 +7,7 @@
 
 #include "qcw.h"
 
-uint16_t vbus_buf[1];
+uint16_t vbus_buf[2];
 uint16_t aux_buf[3]; // ext temp, int temp, vrefint
 
 uint8_t uart_buffer[UART_SIZE];
@@ -20,6 +20,7 @@ float VREF = 3.3f;
 float temp_int = 0;
 float temp_ext = 0;
 float vbus = 0;
+float vdrive = 0;
 
 float transfer_function[RAMP_STEPS];
 
@@ -30,9 +31,6 @@ uint32_t fb_av_lower;
 
 void QCW_Init() {
 	GD_DIS_GPIO_Port->BRR = GD_DIS_Pin; // disable GD
-
-	HAL_Delay(1000);
-
 	TS_CAL1 = *((uint16_t *) 0x1FFF75A8); // get calibration data from memory
 	TS_CAL2 = *((uint16_t *) 0x1FFF75CA);
 	VREFINT = *((uint16_t *) 0x1FFF75AA);
@@ -41,7 +39,7 @@ void QCW_Init() {
 	HAL_ADC_Start_DMA(&hadc1, (uint32_t *) aux_buf, 3);
 
 	HAL_ADCEx_Calibration_Start(&hadc2, ADC_SINGLE_ENDED);
-	HAL_ADC_Start_DMA(&hadc2, (uint32_t *) vbus_buf, 1);
+	HAL_ADC_Start_DMA(&hadc2, (uint32_t *) vbus_buf, 2);
 
 	HAL_TIM_Base_Start(&htim15); // ADC trigger comparator
 
@@ -52,11 +50,13 @@ void QCW_Init() {
 
     HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1); // input capture
 
-    HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1); // LED1 - Vbus
+    HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1); // LED1 - Power
     HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2); // LED2 - Ready
     HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1); // LED3 - Pulse
     HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2); // LED4 - OCD
+
     HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_3); // FAN
+    TIM4->CCR3 = TIM4->ARR / 10;
 
     HAL_TIM_Base_Start_IT(&htim7);
 
@@ -74,7 +74,7 @@ void QCW_Init() {
 float vbus_last = 0;
 uint8_t rdy = 0;
 void QCW_Loop() { // 10Hz
-	if (rdy && (temp_ext < MAX_TEMP)) {
+	if (rdy && (temp_ext < MAX_TEMP) && (vdrive > VDRIVE_TH) && (VREF > 3.0f)) {
 		TIM4->CCR2 = TIM4->ARR / 4; // Set ready light
 		HAL_GPIO_WritePin(RELAY_GPIO_Port, RELAY_Pin, GPIO_PIN_SET);
 	} else {
@@ -82,18 +82,25 @@ void QCW_Loop() { // 10Hz
 		HAL_GPIO_WritePin(RELAY_GPIO_Port, RELAY_Pin, GPIO_PIN_RESET);
 	}
 
+	if (vdrive >= VDRIVE_TH) {
+		TIM4->CCR1 = TIM4->ARR; // Set power light
+	} else {
+		TIM4->CCR1 = TIM4->ARR / 4;
+	}
+
 	float difference = vbus - vbus_last;
 	if (difference < CHARGE_THRESHOLD && vbus > 50) rdy = 1;
 	vbus_last = vbus; // precharge
 
-	float fan = (temp_ext - (float) FAN_START) / ((float) FAN_END - (float) FAN_START);
+	if (vdrive > VDRIVE_TH) {
+		float fan = (temp_ext - (float) FAN_START) / ((float) FAN_END - (float) FAN_START);
 
-	if (fan < 0) fan = 0;
-	if (fan > 1) fan = 1;
+		if (fan < 0) fan = 0;
+		if (fan > 1) fan = 1;
 
-	//fan = 1.0f;
+		TIM4->CCR3 = (int) (fan * (float) TIM4->ARR); // fan
+	}
 
-	TIM4->CCR3 = (int) (fan * (float) TIM4->ARR); // fan
 }
 
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
@@ -109,16 +116,8 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
 		temp_ext = (volts_therm - 0.5f) * 100.0f;
 	}
 	if (hadc == &hadc2) {
-		vbus = (float) vbus_buf[0] * VREF / 4095.0f * 201.0f;// read bus voltage to correct for sag
-		if (vbus < 350) {
-			TIM4->CCR1 = (int) (TIM4->ARR * (vbus / 350.0)); // Set VBUS LED
-		} else {
-			TIM4->CCR1 = TIM4->ARR;
-		}
-
-		//TODO: REMOVE
-		//vbus = 200;
-		//rdy = 1;
+		vbus = (float) vbus_buf[0] * VREF / 4095.0f * 201.0f; // read bus voltage to correct for sag
+		vdrive = (float) vbus_buf[1] * VREF / 4095.0f * 8.5f; // read control voltage
 	}
 
 }
@@ -131,7 +130,7 @@ int ccr3 = 0;
 
 // length in ms
 void StartPulse(float length, float end_v1, float OCD) {
-	if (vbus > 0 && rdy) {
+	if (vbus > 0 && rdy && (temp_ext < MAX_TEMP) && (vdrive > VDRIVE_TH)) {
 		uint32_t counts = (uint32_t) (4095.0 / VREF * OCD / 200.0f * 2.0f); // 200:1 CT, 2R burden
 	    HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, counts);
 
